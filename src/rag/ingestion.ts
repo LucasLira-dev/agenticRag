@@ -6,7 +6,8 @@ import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { PDFParse } from 'pdf-parse';
 import { readFileSync } from 'node:fs';
 import mammoth from 'mammoth';
-import { addDocuments } from './vectorstore';
+import { addDocuments, resetCollection } from './vectorstore';
+import fs from 'fs';
 
 const SUPPORTED_FILE_TYPES = ['.pdf', '.txt', '.md', '.docx'];
 
@@ -74,13 +75,29 @@ export async function chunkDocuments(docs: Document[]): Promise<Document[]> {
   return splitter.splitDocuments(docs);
 }
 
+const SAMPLE_KB_PATH = process.env.SAMPLE_KB_PATH || 'src/data/sample_kb';
+
 async function main() {
-  const docs = await loadFile('src/data/sample_kb/company_it_handbook.md');
+  try {
+    const files = fs.readdirSync(SAMPLE_KB_PATH);
 
-  const chunks = await chunkDocuments(docs);
+    await resetCollection();
+    console.log(`Collection reset. Ingesting ${files.length} file(s)...`);
 
-  const response = await addDocuments(chunks);
-  console.log('Documents added to vector store:', response);
+    for (const file of files) {
+      const filePath = `${SAMPLE_KB_PATH}/${file}`;
+      const docs = await loadFile(filePath);
+      const chunks = await chunkDocuments(docs);
+      await addDocuments(chunks);
+      console.log(`Added ${chunks.length} chunk(s) from ${filePath}`);
+    }
+
+    console.log('Ingestion complete.');
+    process.exit(0);
+  } catch (error) {
+    console.error('Ingestion failed:', error);
+    process.exit(1);
+  }
 }
 
-main().catch(console.error);
+void main();

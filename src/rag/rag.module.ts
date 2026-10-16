@@ -1,10 +1,9 @@
 import { Module } from '@nestjs/common';
 import { RagService } from './rag.service';
 import { RagController } from './rag.controller';
-import { IngestionService } from './ingestion';
 
 @Module({
   controllers: [RagController],
-  providers: [RagService, IngestionService],
+  providers: [RagService],
 })
 export class RagModule {}

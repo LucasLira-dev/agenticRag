@@ -56,6 +56,21 @@ async function ensureCollection(): Promise<void> {
   }
 }
 
+function getCollectionName(): string {
+  return process.env.QDRANT_COLLECTION_NAME || 'agentic-rag';
+}
+
+export async function resetCollection(): Promise<void> {
+  const collectionName = getCollectionName();
+  const collections = await client.getCollections();
+
+  if (collections.collections.some((c) => c.name === collectionName)) {
+    await client.deleteCollection(collectionName);
+  }
+
+  vectorStore = null;
+}
+
 export async function getVectorStore(): Promise<QdrantVectorStore> {
   if (vectorStore) return vectorStore;
 

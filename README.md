@@ -1,98 +1,161 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Agentic RAG — NestJS + LangGraph
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Uma API NestJS que expõe um **assistente de Agentic RAG (Retrieval-Augmented Generation)** para suporte de TI corporativo. Construída com [LangChain](https://js.langchain.com/) e [LangGraph](https://langchain-ai.github.io/langgraphjs/), o agente roteia cada pergunta, recupera evidências de uma base de conhecimento privada (Qdrant), avalia a qualidade delas e, quando a base é insuficiente, recorre à busca na web com reescrita de consulta. As respostas incluem citações e um trace passo a passo do raciocínio do agente.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Como funciona
 
-## Description
+```
+START → route_question
+  ├─ (kb) → retrieve_kb → grade_kb
+  │            ├─ good → generate_from_kb → END
+  │            └─ weak → search_web → grade_web
+  │                          ├─ good → generate_from_web → END
+  │                          ├─ retry_count < 2 → rewrite_query → search_web (loop)
+  │                          └─ else → insufficient → END
+  └─ (direct) → direct_answer → END
+```
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- **route_question** — classifica a pergunta como relacionada à base de conhecimento ou como conversa casual (saída estruturada via schema Zod).
+- **retrieve_kb** — busca por similaridade (top-3) na coleção do Qdrant.
+- **grade_kb / grade_web** — um avaliador de evidência pontua se o material recuperado de fato sustenta uma resposta (`good` / `weak`).
+- **generate_from_kb / generate_from_web** — geram a resposta final; respostas da base constroem citações a partir das fontes dos documentos.
+- **rewrite_query** — quando os resultados web são fracos, reescreve a consulta e busca novamente (até 2 tentativas).
+- **direct_answer** — lida com saudações e perguntas que não exigem recuperação.
+- **insufficient** — fallback gracioso quando nem a base nem a web produzem evidência utilizável.
 
-## Project setup
+Cada nó acrescenta entradas a um array `trace[]`, de modo que todo o caminho de decisão fica visível na resposta.
+
+### Modelos
+
+| Função | Provedor | Modelo |
+|---|---|---|
+| Embeddings | Google | `gemini-embedding-001` (3072 dims) |
+| Geração de resposta | Google | `gemini-2.5-flash-lite` (padrão) |
+| Roteamento | Groq | `openai/gpt-oss-120b` |
+| Avaliação de evidência | Groq | `openai/gpt-oss-20b` |
+| Reescrita de consulta | Groq | `qwen/qwen3.6-27b` |
+| Respostas diretas | Groq | `qwen/qwen3.8-27b` |
+
+A seleção de modelos fica em `src/llm.factory.ts`; os modelos de cada nó estão definidos nos arquivos sob `src/nodes/`.
+
+## Configuração do projeto
 
 ```bash
 $ npm install
 ```
 
-## Compile and run the project
+### Variáveis de ambiente
+
+Crie um arquivo `.env` na raiz do projeto (não commite chaves reais):
+
+| Variável | Obrigatória | Descrição |
+|---|---|---|
+| `QDRANT_URL` | sim | URL da instância Qdrant (Qdrant Cloud ou local, ex.: `http://localhost:6333`) |
+| `QDRANT_API_KEY` | sim* | Chave de API (*não necessária em Qdrant local sem autenticação) |
+| `QDRANT_COLLECTION_NAME` | não | Padrão: `agentic-rag` |
+| `GOOGLE_API_KEY` | sim | Chave do Google AI Studio (Gemini LLM + embeddings) |
+| `GROQ_API_KEY` | sim | Chave da Groq (roteador / avaliadores / reescrita) |
+| `TAVILY_API_KEY` | sim | Chave Tavily para a ferramenta `internet_search` |
+| `SAMPLE_KB_PATH` | não | Pasta da base de conhecimento para ingestão. Padrão: `src/data/sample_kb` |
+| `PORT` | não | Padrão: `3000` |
+
+### Popular a base de conhecimento
+
+A ingestão lê todos os arquivos de `SAMPLE_KB_PATH` (suporta `.md`, `.txt`, `.pdf`, `.docx`), fatia o texto (`RecursiveCharacterTextSplitter`, 900 caracteres / 120 de sobreposição) e gera os embeddings no Qdrant. **Isso reseta a coleção** — execute antes do primeiro uso e sempre que quiser recarregar a base:
 
 ```bash
-# development
+$ npm run ingest
+```
+
+A base de exemplo traz dois documentos fictícios da empresa "NovaRetail": `company_it_handbook.md` e `service_desk_runbook.md`.
+
+> **Qdrant local (opcional):** em vez do Qdrant Cloud você pode rodar `docker run -p 6333:6333 qdrant/qdrant` e definir `QDRANT_URL=http://localhost:6333`.
+
+## Compilar e executar o projeto
+
+```bash
+# desenvolvimento
 $ npm run start
 
-# watch mode
+# modo watch
 $ npm run start:dev
 
-# production mode
+# produção
 $ npm run start:prod
 ```
 
-## Run tests
+## API
+
+### `POST /agent/ask`
+
+Faz uma pergunta ao agente.
 
 ```bash
-# unit tests
+curl -X POST http://localhost:3000/agent/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Como redefinir minha senha de VPN?"}'
+```
+
+Corpo da requisição:
+
+```json
+{ "question": "string" }
+```
+
+Resposta — estado final do agente:
+
+```json
+{
+  "question": "Como redefinir minha senha de VPN?",
+  "current_query": "Como redefinir minha senha de VPN?",
+  "kb_docs": ["..."],
+  "web_results": [],
+  "kb_grade": "good",
+  "web_grade": null,
+  "answer": "...",
+  "source_used": "kb",
+  "retry_count": 0,
+  "trace": ["route_question: kb", "retrieve_kb: 3 docs", "grade_kb: good", "generate_from_kb"],
+  "citations": [{ "title": "...", "url": "...", "type": "kb" }]
+}
+```
+
+### `GET /`
+
+Health check — retorna `Hello World!`.
+
+## Testes
+
+```bash
+# testes unitários
 $ npm run test
 
-# e2e tests
+# testes e2e
 $ npm run test:e2e
 
-# test coverage
+# cobertura de testes
 $ npm run test:cov
+```
+
+## Estrutura do projeto
+
+```
+src/
+├── agent/          # Controller + service que compila e invoca o grafo LangGraph
+├── nodes/          # Nós do grafo (rotear, recuperar, avaliar, gerar, reescrever, ...)
+├── routers/        # Arestas condicionais entre nós + registro do trace
+├── state/          # Tipo AgentState compartilhado pelo grafo
+├── schemas/        # Schemas Zod para saída estruturada (roteamento, avaliação)
+├── rag/            # Singleton do vectorstore Qdrant + script de ingestão
+├── tools/          # Ferramentas LangChain (busca web Tavily)
+├── data/sample_kb/ # Documentos de exemplo da base de conhecimento
+└── llm.factory.ts  # Catálogo e instanciação de LLMs (Google / Groq)
 ```
 
 ## Deployment
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+Quando for implantar sua aplicação NestJS em produção, consulte a [documentação de deployment](https://docs.nestjs.com/deployment). Lembre-se de configurar todas as variáveis de ambiente necessárias e rodar `npm run ingest` contra a coleção Qdrant de produção antes de servir tráfego.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Licença
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+UNLICENSED.
